@@ -16,9 +16,69 @@ import {
   X,
   Sparkles,
   Columns,
+  RectangleVertical,
+  Star
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
+
+// Helper to fallback to direct RapidAPI fetch if backend is missing (e.g., Netlify static deployment)
+const rapidApiKey = "f2a97f0d4fmsh3f12358e8168654p190e98jsn798748b183c4";
+const rapidApiHost = "instagram120.p.rapidapi.com";
+
+export const fetchWithFallback = async (endpoint: string, bodyParams: any, localUrl: string) => {
+  try {
+    const res = await fetch(localUrl);
+    const contentType = res.headers.get("content-type");
+    if (res.ok && contentType && contentType.includes("application/json")) {
+      return res;
+    }
+  } catch (err) {}
+  
+  return fetch(`https://${rapidApiHost}/api/instagram/${endpoint}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-rapidapi-host": rapidApiHost,
+      "x-rapidapi-key": rapidApiKey,
+    },
+    body: JSON.stringify(bodyParams)
+  });
+};
+
+export const proxify = (url: string, dl = false) => {
+  if (!url) return url;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    // Use fallback proxies on any deployment outside of localhost or AI Studio (run.app)
+    // This ensures it works seamlessly on Netlify, Vercel, GitHub Pages even with custom domains
+    if (host !== 'localhost' && host !== '127.0.0.1' && !host.includes('run.app')) {
+      // wsrv.nl is great for images, use it unless it's a video (mp4) or download
+      if (!dl && !url.includes('.mp4')) {
+        return `https://wsrv.nl/?url=${encodeURIComponent(url)}`;
+      }
+      return `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    }
+  }
+  return `/api/proxy?url=${encodeURIComponent(url)}${dl ? "&dl=1" : ""}`;
+};
+
+function useResponsiveColumns() {
+  const [cols, setCols] = useState(2);
+  
+  useEffect(() => {
+    const updateCols = () => {
+      if (window.innerWidth >= 768) setCols(4);
+      else if (window.innerWidth >= 640) setCols(3);
+      else setCols(2);
+    };
+    updateCols();
+    window.addEventListener('resize', updateCols);
+    return () => window.removeEventListener('resize', updateCols);
+  }, []);
+  
+  return cols;
+}
 
 const VideoIcon = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="currentColor" className={className} xmlns="http://www.w3.org/2000/svg">
@@ -34,21 +94,27 @@ const CarouselIcon = ({ className }: { className?: string }) => (
 );
 
 // High-performance image component with smooth fade-in and self-healing fallback
-function FadeInImage({ src, alt, className, onError, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
-  const [isLoaded, setIsLoaded] = useState(false);
+function FadeInImage({ src, alt, className, onError, fastLoad = false, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { fastLoad?: boolean }) {
+  const [isLoaded, setIsLoaded] = useState(fastLoad);
   const [hasError, setHasError] = useState(false);
   const [currentSrc, setCurrentSrc] = useState<string | null>(null);
   const [attemptedFallback, setAttemptedFallback] = useState(false);
   
   // Extract raw URL if it's currently proxied
   const getRawUrl = (url: string) => {
-    if (url && url.startsWith("/api/proxy?url=")) {
+    if (!url) return null;
+    if (url.startsWith("/api/proxy?url=")) {
       try {
-        const decoded = decodeURIComponent(url.split("/api/proxy?url=")[1].split("&")[0]);
-        return decoded;
+        return decodeURIComponent(url.split("/api/proxy?url=")[1].split("&")[0]);
       } catch (e) {
         return null;
       }
+    }
+    if (url.startsWith("https://wsrv.nl/?url=")) {
+      try { return decodeURIComponent(url.split("https://wsrv.nl/?url=")[1]); } catch (e) { return null; }
+    }
+    if (url.startsWith("https://api.allorigins.win/raw?url=")) {
+      try { return decodeURIComponent(url.split("https://api.allorigins.win/raw?url=")[1]); } catch (e) { return null; }
     }
     return null;
   };
@@ -67,10 +133,10 @@ function FadeInImage({ src, alt, className, onError, ...props }: React.ImgHTMLAt
       setCurrentSrc(src);
     }
     
-    setIsLoaded(false);
+    if (!fastLoad) setIsLoaded(false);
     setHasError(false);
     setAttemptedFallback(false);
-  }, [src]);
+  }, [src, fastLoad]);
 
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
     if (!src) return;
@@ -82,7 +148,7 @@ function FadeInImage({ src, alt, className, onError, ...props }: React.ImgHTMLAt
     } else if (!rawUrl && currentSrc === src && !attemptedFallback) {
       // Direct load of unproxied URL failed, fallback to a newly constructed proxied version
       setAttemptedFallback(true);
-      setCurrentSrc(`/api/proxy?url=${encodeURIComponent(src)}`);
+      setCurrentSrc(proxify(src));
     } else {
       // Both attempts failed
       setHasError(true);
@@ -184,6 +250,7 @@ interface CacheEntry {
 const localCache: Record<string, CacheEntry> = {};
 
 export default function App() {
+  const bentoCols = useResponsiveColumns();
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
@@ -201,6 +268,10 @@ export default function App() {
   >("posts");
   const [selectedPost, setSelectedPost] = useState<PostNode | null>(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState<number | null>(null);
+  const [selectedHighlightIndex, setSelectedHighlightIndex] = useState<number | null>(null);
+  const [activeHighlightStories, setActiveHighlightStories] = useState<any[]>([]);
+  const [isHighlightStoriesLoading, setIsHighlightStoriesLoading] = useState(false);
+  const [activeHighlightStoryIndex, setActiveHighlightStoryIndex] = useState(0);
 
   const [isBentoGrid, setIsBentoGrid] = useState(false);
   const [reelsViewMode, setReelsViewMode] = useState<"grid" | "immersive">("grid");
@@ -426,7 +497,7 @@ export default function App() {
     };
 
     // Parallel fetch: Posts (primary view content)
-    const fetchPostsPromise = fetch(`/api/posts/${encodeURIComponent(user)}`)
+    const fetchPostsPromise = fetchWithFallback("posts", { username: user }, `/api/posts/${encodeURIComponent(user)}`)
       .then(async (res) => {
         const pData = await res.json();
         if (!res.ok) {
@@ -472,7 +543,7 @@ export default function App() {
       .catch((err) => {
         console.error("Posts fetch error:", err);
         // Fallback to /api/profile if special endpoint fails
-        return fetch(`/api/profile/${encodeURIComponent(user)}`)
+        return fetchWithFallback("posts", { username: user }, `/api/profile/${encodeURIComponent(user)}`)
           .then(async (res) => {
             const pData = await res.json();
             if (!res.ok) throw new Error(pData.message || "Profile not found");
@@ -507,7 +578,7 @@ export default function App() {
       });
 
     // Parallel fetch: User Info (does not block showing posts)
-    const fetchUserInfoPromise = fetch(`/api/user-info/${encodeURIComponent(user)}`)
+    const fetchUserInfoPromise = fetchWithFallback("userInfo", { username: user }, `/api/user-info/${encodeURIComponent(user)}`)
       .then(async (res) => {
         const uiData = await res.json();
         if (uiData.result && uiData.result[0] && uiData.result[0].user) {
@@ -534,9 +605,9 @@ export default function App() {
       });
 
     // Parallel fetch: Stories
-    const fetchStoriesPromise = fetch(`/api/stories/${encodeURIComponent(user)}`)
-      .then((r) => r.json())
-      .then((data) => {
+    const fetchStoriesPromise = fetchWithFallback("stories", { username: user }, `/api/stories/${encodeURIComponent(user)}`)
+      .then(async (r) => {
+        const data = await r.json();
         if (data.result) {
           activeStories = data.result;
           setStories(data.result);
@@ -550,9 +621,9 @@ export default function App() {
       });
 
     // Parallel fetch: Highlights
-    const fetchHighlightsPromise = fetch(`/api/highlights/${encodeURIComponent(user)}`)
-      .then((r) => r.json())
-      .then((data) => {
+    const fetchHighlightsPromise = fetchWithFallback("highlights", { username: user }, `/api/highlights/${encodeURIComponent(user)}`)
+      .then(async (r) => {
+        const data = await r.json();
         if (data.result) {
           activeHighlights = data.result;
           setHighlights(data.result);
@@ -579,13 +650,37 @@ export default function App() {
     }
   };
 
+  const handleHighlightClick = async (index: number) => {
+    const hlt = highlights[index];
+    if (!hlt) return;
+
+    setSelectedHighlightIndex(index);
+    setActiveHighlightStoryIndex(0);
+    setIsHighlightStoriesLoading(true);
+    setActiveHighlightStories([]);
+
+    try {
+      const pRes = await fetchWithFallback(
+        "stories",
+        { username: profileData?.username, highlight_id: hlt.id },
+        `/api/stories/${encodeURIComponent(profileData?.username || "")}?highlight_id=${encodeURIComponent(hlt.id)}`
+      );
+      const data = await pRes.json();
+      if (data.result) {
+        setActiveHighlightStories(data.result);
+      }
+    } catch (err) {
+      console.error("Failed to load highlight stories", err);
+    } finally {
+      setIsHighlightStoriesLoading(false);
+    }
+  };
+
   const loadMorePosts = useCallback(async () => {
     if (!nextPageCursor || isLoadingMore || !profileData) return;
     setIsLoadingMore(true);
     try {
-      const pRes = await fetch(
-        `/api/profile/${encodeURIComponent(profileData.username)}?maxId=${encodeURIComponent(nextPageCursor)}`,
-      );
+      const pRes = await fetchWithFallback("posts", { username: profileData.username, maxId: nextPageCursor }, `/api/profile/${encodeURIComponent(profileData.username)}?maxId=${encodeURIComponent(nextPageCursor)}`);
       const pData = await pRes.json();
       if (!pRes.ok)
         throw new Error(pData.message || pData.error || "Failed to load more");
@@ -636,10 +731,6 @@ export default function App() {
     return num.toString();
   };
 
-  // Only proxy for downloads or videos if needed, but for feeds direct URLs load faster.
-  const proxify = (url: string, dl = false) =>
-    `/api/proxy?url=${encodeURIComponent(url)}${dl ? "&dl=1" : ""}`;
-
   const getMediaUrl = (item: any, thumbnail = false) => {
     let url = "";
     if (item.image_versions2?.candidates?.length > 0) {
@@ -661,10 +752,44 @@ export default function App() {
     return url;
   };
 
+  const getMediaDimensions = (item: any) => {
+    if (item.image_versions2?.candidates?.length > 0) {
+      const cand = item.image_versions2.candidates[0];
+      if (cand.width && cand.height) return { width: cand.width, height: cand.height };
+    } else if (item.original_width && item.original_height) {
+      return { width: item.original_width, height: item.original_height };
+    }
+    return { width: 1, height: 1 }; // fallback square
+  };
+
   const triggerDownload = (url: string, filename?: string) => {
     let finalUrl = url;
     if (finalUrl.startsWith("/api/proxy") && !finalUrl.includes("&dl=1")) {
       finalUrl += "&dl=1";
+    } else if (typeof window !== 'undefined' && (window.location.hostname.includes('netlify.app') || window.location.hostname.includes('vercel.app') || window.location.hostname.includes('github.io'))) {
+      // Create a blob from the cors proxy to force download
+      fetch(finalUrl)
+        .then(r => r.blob())
+        .then(blob => {
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = blobUrl;
+          if (filename) link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        })
+        .catch(e => {
+          // fallback if blob fails
+          const link = document.createElement("a");
+          link.href = finalUrl;
+          if (filename) link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        });
+      return;
     }
     const link = document.createElement("a");
     link.href = finalUrl;
@@ -988,7 +1113,7 @@ export default function App() {
 
               {/* Tabs */}
               <div className="relative border-t border-[#262626] flex items-center justify-center min-h-[48px] mb-8 select-none">
-                <div className="flex flex-row justify-center gap-4 sm:gap-12 uppercase text-xs font-bold tracking-widest">
+                <div className="flex flex-row justify-center gap-4 sm:gap-12 uppercase text-[10px] sm:text-xs font-bold tracking-widest overflow-x-auto w-full no-scrollbar px-2 sm:px-0">
                   <TabBtn
                     icon={<Grid className="w-3.5 h-3.5" />}
                     label="Posts"
@@ -1008,7 +1133,7 @@ export default function App() {
                     onClick={() => setActiveTab("stories")}
                   />
                   <TabBtn
-                    icon={<Sparkles className="w-3.5 h-3.5" />}
+                    icon={<Star className="w-3.5 h-3.5" />}
                     label={`Highlights (${isHighlightsLoading && highlights.length === 0 ? "..." : highlights.length})`}
                     active={activeTab === "highlights"}
                     onClick={() => setActiveTab("highlights")}
@@ -1017,10 +1142,10 @@ export default function App() {
 
                 {/* Right Corner Buttons */}
                 {profileData && (
-                  <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center pr-1 sm:pr-3 z-10">
+                  <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center pr-2 sm:pr-3 z-10 bg-gradient-to-l from-black via-black/80 to-transparent pl-4">
                     {/* View Mode (Bento vs. Standard Grid) - Only for Posts */}
                     {activeTab === "posts" && !isPostsLoading && posts.length > 0 && (
-                      <div className="flex items-center gap-1 bg-zinc-900/60 p-0.5 rounded-full border border-zinc-800/80">
+                      <div className="flex items-center gap-1 bg-zinc-900/80 p-0.5 rounded-full border border-zinc-800/80">
                         <button
                           onClick={() => setIsBentoGrid(false)}
                           className={`p-1.5 rounded-full transition-all ${
@@ -1048,26 +1173,28 @@ export default function App() {
 
                     {/* Reels Mode Selectors - Only for Reels */}
                     {activeTab === "reels" && (
-                      <div className="flex items-center gap-1 bg-zinc-900/60 p-0.5 rounded-full border border-zinc-800/80">
+                      <div className="flex items-center gap-1 bg-zinc-900/80 p-0.5 rounded-full border border-zinc-800/80">
                         <button
                           onClick={() => setReelsViewMode("grid")}
-                          className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
+                          className={`p-1.5 rounded-full transition-all ${
                             reelsViewMode === "grid"
                               ? "bg-white text-black shadow-sm"
-                              : "text-zinc-400 hover:text-white"
+                              : "text-zinc-500 hover:text-zinc-300"
                           }`}
+                          title="Grid View"
                         >
-                          Grid
+                          <Grid className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => setReelsViewMode("immersive")}
-                          className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
+                          className={`p-1.5 rounded-full transition-all ${
                             reelsViewMode === "immersive"
                               ? "bg-white text-black shadow-sm"
-                              : "text-zinc-400 hover:text-white"
+                              : "text-zinc-500 hover:text-zinc-300"
                           }`}
+                          title="Immersive View"
                         >
-                          Immersive
+                          <RectangleVertical className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     )}
@@ -1110,44 +1237,58 @@ export default function App() {
                           No {activeTab} found or account is completely private.
                         </div>
                       ) : isBentoGrid ? (
-                        /* Staggered Bento Grid Layout */
-                        <div className="columns-2 sm:columns-3 md:columns-4 gap-2 sm:gap-4 [column-fill:_balance] animate-fade-in">
-                          {posts
-                            .filter(
-                              (p) =>
-                                activeTab === "posts" ||
-                                p.media_type === 2 ||
-                                (p.video_versions && p.video_versions.length > 0),
-                            )
-                            .map((post, index) => {
-                              return (
-                                <div
-                                  key={post.id || `post-${index}`}
-                                  className="break-inside-avoid mb-2 sm:mb-4 relative group bg-[#121212] cursor-pointer overflow-hidden rounded-xl border border-zinc-800 hover:scale-[1.02] transition-all duration-300 shadow-md"
-                                  onClick={() => setSelectedPost(post)}
-                                >
-                                  <img
-                                    src={proxify(getMediaUrl(post, true))}
-                                    alt={post.caption?.text || "Post"}
-                                    loading={index < 12 ? "eager" : "lazy"}
-                                    decoding="async"
-                                    referrerPolicy="no-referrer"
-                                    className="w-full h-auto object-cover transition-transform duration-700 group-hover:scale-105 rounded-xl"
-                                  />
+                        /* Staggered Bento Grid Layout (JS Masonry) */
+                        (() => {
+                          const bentoPosts = posts.filter(
+                            (p) =>
+                              activeTab === "posts" ||
+                              p.media_type === 2 ||
+                              (p.video_versions && p.video_versions.length > 0)
+                          );
+                          const colsData = Array.from({ length: bentoCols }, () => [] as typeof bentoPosts);
+                          bentoPosts.forEach((p, i) => colsData[i % bentoCols].push(p));
 
-                                  <div className="absolute top-3 right-3 text-white drop-shadow-md z-10">
-                                    {post.media_type === 8 ? (
-                                      <CarouselIcon className="w-5 h-5 text-white" />
-                                    ) : post.video_versions ? (
-                                      <VideoIcon className="w-5 h-5 text-white" />
-                                    ) : null}
-                                  </div>
+                          return (
+                            <div className="flex w-full gap-2 sm:gap-4 animate-fade-in items-start">
+                              {colsData.map((colPosts, colIndex) => (
+                                <div key={colIndex} className="flex flex-col flex-1 gap-2 sm:gap-4">
+                                  {colPosts.map((post) => {
+                                    const index = bentoPosts.indexOf(post);
+                                    const dims = getMediaDimensions(post);
+                                    const ratio = dims.width / dims.height;
+                                    return (
+                                      <div
+                                        key={post.id || `post-${index}`}
+                                        className="relative group bg-[#121212] cursor-pointer overflow-hidden rounded-xl border border-zinc-800 hover:scale-[1.02] transition-all duration-300 shadow-md"
+                                        style={{ aspectRatio: `${ratio}` }}
+                                        onClick={() => setSelectedPost(post)}
+                                      >
+                                        <img
+                                          src={proxify(getMediaUrl(post, true))}
+                                          alt={post.caption?.text || "Post"}
+                                          loading={index < 12 ? "eager" : "lazy"}
+                                          decoding="async"
+                                          referrerPolicy="no-referrer"
+                                          className="w-full h-full absolute inset-0 object-cover transition-transform duration-700 group-hover:scale-105 rounded-xl"
+                                        />
 
-                                  <div className="absolute inset-0 bg-black/25 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl" />
+                                        <div className="absolute top-3 right-3 text-white drop-shadow-md z-10">
+                                          {post.media_type === 8 ? (
+                                            <CarouselIcon className="w-5 h-5 text-white" />
+                                          ) : post.video_versions ? (
+                                            <VideoIcon className="w-5 h-5 text-white" />
+                                          ) : null}
+                                        </div>
+
+                                        <div className="absolute inset-0 bg-black/25 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl" />
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              );
-                            })}
-                        </div>
+                              ))}
+                            </div>
+                          );
+                        })()
                       ) : (
                         /* Standard Square Grid Layout */
                         <div className="grid grid-cols-3 gap-1 sm:gap-2">
@@ -1287,7 +1428,8 @@ export default function App() {
                       {highlights.map((hlt, index) => (
                         <div
                           key={hlt.id || `hlt-${index}`}
-                          className="flex flex-col items-center gap-3 group"
+                          className="flex flex-col items-center gap-3 group cursor-pointer"
+                          onClick={() => handleHighlightClick(index)}
                         >
                           <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full p-[2px] bg-[#262626] group-hover:bg-[#363636] transition-colors">
                             <FadeInImage
@@ -1369,26 +1511,8 @@ export default function App() {
               {/* TAB CONTENT: Welcome */}
               {homepageTab === "welcome" && (
                 <div className="flex flex-col items-center">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-3xl mt-2 text-left">
-                    <div className="p-5 bg-[#121212]/50 border border-zinc-900 rounded-2xl">
-                      <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center text-red-500 mb-3 font-semibold text-sm">1</div>
-                      <h4 className="font-bold text-white mb-1 text-sm">Enter Username</h4>
-                      <p className="text-xs text-neutral-400 leading-relaxed font-normal">Type any public Instagram username or copy and paste their profile link above.</p>
-                    </div>
-                    <div className="p-5 bg-[#121212]/50 border border-zinc-900 rounded-2xl">
-                      <div className="w-8 h-8 rounded-lg bg-pink-500/10 flex items-center justify-center text-pink-500 mb-3 font-semibold text-sm">2</div>
-                      <h4 className="font-bold text-white mb-1 text-sm">Browse Content</h4>
-                      <p className="text-xs text-neutral-400 leading-relaxed font-normal">View all HD posts, carousels, reels, active stories, and archived highlights.</p>
-                    </div>
-                    <div className="p-5 bg-[#121212]/50 border border-zinc-900 rounded-2xl">
-                      <div className="w-8 h-8 rounded-lg bg-yellow-500/10 flex items-center justify-center text-yellow-500 mb-3 font-semibold text-sm">3</div>
-                      <h4 className="font-bold text-white mb-1 text-sm">Save & Download</h4>
-                      <p className="text-xs text-neutral-400 leading-relaxed font-normal">Bookmark profiles or individual media. Download high-resolution files instantly.</p>
-                    </div>
-                  </div>
-
                   {historyList.length > 0 && (
-                    <div className="w-full max-w-3xl mt-12 text-left">
+                    <div className="w-full max-w-3xl mt-4 text-left">
                       <h3 className="text-xs font-bold text-neutral-400 tracking-wider uppercase mb-4">Quick Access Profiles</h3>
                       <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-none">
                         {historyList.slice(0, 8).map((profile) => (
@@ -1550,6 +1674,55 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      {/* Highlight Modal overlay */}
+      <AnimatePresence>
+        {selectedHighlightIndex !== null && (
+          isHighlightStoriesLoading ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md select-none"
+              onClick={() => setSelectedHighlightIndex(null)}
+            >
+              <div className="flex flex-col items-center gap-4">
+                <div className="w-8 h-8 rounded-full border-2 border-zinc-500 border-t-white animate-spin"></div>
+                <div className="text-sm text-zinc-400 font-medium">Loading highlight...</div>
+              </div>
+            </motion.div>
+          ) : activeHighlightStories.length > 0 ? (
+            <StoryModal
+              stories={activeHighlightStories}
+              currentIndex={activeHighlightStoryIndex}
+              onChangeIndex={(idx) => {
+                if (idx === null) {
+                  setSelectedHighlightIndex(null);
+                } else {
+                  setActiveHighlightStoryIndex(idx);
+                }
+              }}
+              onClose={() => setSelectedHighlightIndex(null)}
+              proxify={proxify}
+              getMediaUrl={getMediaUrl}
+              triggerDownload={triggerDownload}
+              profileData={profileData}
+            />
+          ) : (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md select-none"
+              onClick={() => setSelectedHighlightIndex(null)}
+            >
+              <div className="text-sm text-zinc-400 font-medium bg-zinc-900 px-6 py-3 rounded-full border border-zinc-800">
+                This highlight is empty or could not be loaded.
+              </div>
+            </motion.div>
+          )
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1671,10 +1844,11 @@ function PostModal({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                src={currentItem.url || undefined}
+                src={currentItem.url}
                 controls
                 autoPlay
                 playsInline
+                referrerPolicy="no-referrer"
                 className="w-full h-full sm:max-h-[90vh] object-contain"
               />
             ) : (
@@ -1695,13 +1869,12 @@ function PostModal({
                     justifyContent: "center",
                   }}
                 >
-                  <motion.img
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    src={currentItem?.url || undefined}
+                  <FadeInImage
+                    src={currentItem?.url}
+                    alt="Post media"
                     referrerPolicy="no-referrer"
                     className="w-full h-full sm:max-h-[90vh] object-contain cursor-zoom-in"
+                    fastLoad={true}
                   />
                 </TransformComponent>
               </TransformWrapper>
@@ -1773,6 +1946,7 @@ function PostModal({
                   src={proxify(post.user.profile_pic_url)}
                   alt="avatar"
                   className="w-full h-full rounded-full"
+                  fastLoad={true}
                 />
               )}
             </div>
@@ -1820,7 +1994,7 @@ function StoryModal({
   useEffect(() => {
     if (!activeStory) return;
     const initialUrl = isVideo 
-      ? proxify(activeStory.video_versions[0].url) 
+      ? proxify(activeStory.video_versions[0].url)
       : proxify(getMediaUrl(activeStory));
     setActiveMediaUrl(initialUrl);
     setAttemptedFallback(false);
@@ -1830,16 +2004,16 @@ function StoryModal({
   const handleImageError = () => {
     if (!attemptedFallback) {
       setAttemptedFallback(true);
-      const raw = getMediaUrl(activeStory);
-      if (raw) setActiveMediaUrl(raw);
+      const proxied = proxify(getMediaUrl(activeStory));
+      if (proxied) setActiveMediaUrl(proxied);
     }
   };
 
   const handleVideoError = () => {
     if (!attemptedFallback) {
       setAttemptedFallback(true);
-      const raw = activeStory.video_versions[0]?.url;
-      if (raw) setActiveMediaUrl(raw);
+      const proxied = proxify(activeStory.video_versions[0]?.url);
+      if (proxied) setActiveMediaUrl(proxied);
     }
   };
 
@@ -1982,6 +2156,7 @@ function StoryModal({
                   src={proxify(profileData.profile_pic_url_hd)}
                   alt="avatar"
                   className="w-full h-full rounded-full"
+                  fastLoad={true}
                 />
               ) : (
                 <User className="w-4 h-4 m-auto text-zinc-400" />
@@ -2021,6 +2196,7 @@ function StoryModal({
               src={activeMediaUrl || undefined}
               autoPlay
               playsInline
+              referrerPolicy="no-referrer"
               onError={handleVideoError}
               className="w-full h-full object-contain"
               onEnded={() => handleNext()}
@@ -2338,6 +2514,7 @@ function ReelItem({
           loop
           muted={isMuted}
           playsInline
+          referrerPolicy="no-referrer"
           className="w-full h-full object-contain relative z-10"
         />
       ) : (

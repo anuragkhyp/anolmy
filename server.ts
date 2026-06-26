@@ -260,8 +260,14 @@ async function startServer() {
   app.get("/api/stories/:username", async (req, res) => {
     try {
       const { username } = req.params;
-      const cacheKey = `stories_${username}`;
+      const highlightId = req.query.highlight_id as string;
+      const cacheKey = highlightId ? `stories_${username}_${highlightId}` : `stories_${username}`;
       const data = await fetchWithCache(cacheKey, async () => {
+        const bodyPayload: any = { username };
+        if (highlightId) {
+          bodyPayload.highlight_id = highlightId;
+        }
+        
         const response = await fetch(
           `https://${rapidApiHost}/api/instagram/stories`,
           {
@@ -271,7 +277,7 @@ async function startServer() {
               "x-rapidapi-host": rapidApiHost,
               "x-rapidapi-key": rapidApiKey,
             },
-            body: JSON.stringify({ username }),
+            body: JSON.stringify(bodyPayload),
           },
         );
 
