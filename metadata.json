@@ -1,0 +1,6 @@
+{
+  "name": "anolmy",
+  "description": "Anonymous Instagram public profile viewer, bookmark organizer, and search tracker.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
