@@ -987,66 +987,37 @@ export default function App() {
               ) : null}
 
               {/* Tabs */}
-              <div className="border-t border-[#262626] flex flex-wrap justify-center gap-4 sm:gap-12 mb-8 uppercase text-xs font-bold tracking-widest">
-                <TabBtn
-                  icon={<Grid className="w-3.5 h-3.5" />}
-                  label="Posts"
-                  active={activeTab === "posts"}
-                  onClick={() => setActiveTab("posts")}
-                />
-                <TabBtn
-                  icon={<PlaySquare className="w-3.5 h-3.5" />}
-                  label="Reels"
-                  active={activeTab === "reels"}
-                  onClick={() => setActiveTab("reels")}
-                />
-                <TabBtn
-                  icon={<Clock className="w-3.5 h-3.5" />}
-                  label={`Stories (${isStoriesLoading && stories.length === 0 ? "..." : stories.length})`}
-                  active={activeTab === "stories"}
-                  onClick={() => setActiveTab("stories")}
-                />
-                <TabBtn
-                  icon={<Sparkles className="w-3.5 h-3.5" />}
-                  label={`Highlights (${isHighlightsLoading && highlights.length === 0 ? "..." : highlights.length})`}
-                  active={activeTab === "highlights"}
-                  onClick={() => setActiveTab("highlights")}
-                />
-              </div>
+              <div className="relative border-t border-[#262626] flex items-center justify-center min-h-[48px] mb-8 select-none">
+                <div className="flex flex-row justify-center gap-4 sm:gap-12 uppercase text-xs font-bold tracking-widest">
+                  <TabBtn
+                    icon={<Grid className="w-3.5 h-3.5" />}
+                    label="Posts"
+                    active={activeTab === "posts"}
+                    onClick={() => setActiveTab("posts")}
+                  />
+                  <TabBtn
+                    icon={<PlaySquare className="w-3.5 h-3.5" />}
+                    label="Reels"
+                    active={activeTab === "reels"}
+                    onClick={() => setActiveTab("reels")}
+                  />
+                  <TabBtn
+                    icon={<Clock className="w-3.5 h-3.5" />}
+                    label={`Stories (${isStoriesLoading && stories.length === 0 ? "..." : stories.length})`}
+                    active={activeTab === "stories"}
+                    onClick={() => setActiveTab("stories")}
+                  />
+                  <TabBtn
+                    icon={<Sparkles className="w-3.5 h-3.5" />}
+                    label={`Highlights (${isHighlightsLoading && highlights.length === 0 ? "..." : highlights.length})`}
+                    active={activeTab === "highlights"}
+                    onClick={() => setActiveTab("highlights")}
+                  />
+                </div>
 
-              {/* Tab Navigation Toolbar (Ultra-clean, modern subheader) */}
-              {profileData && (activeTab === "posts" || activeTab === "reels") && (
-                <div className="flex flex-row items-center justify-between gap-3 border-b border-[#262626]/60 pb-3 mb-6 select-none animate-fade-in">
-                  {/* Left Side: context description or reels mode selection */}
-                  <div className="flex items-center gap-3">
-                    {activeTab === "reels" && (
-                      <div className="flex items-center gap-1 bg-zinc-900/60 p-0.5 rounded-full border border-zinc-800/80">
-                        <button
-                          onClick={() => setReelsViewMode("grid")}
-                          className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
-                            reelsViewMode === "grid"
-                              ? "bg-white text-black shadow-sm"
-                              : "text-zinc-400 hover:text-white"
-                          }`}
-                        >
-                          Grid View
-                        </button>
-                        <button
-                          onClick={() => setReelsViewMode("immersive")}
-                          className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
-                            reelsViewMode === "immersive"
-                              ? "bg-white text-black shadow-sm"
-                              : "text-zinc-400 hover:text-white"
-                          }`}
-                        >
-                          Immersive Feed
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Side: layout selectors */}
-                  <div className="flex items-center gap-2">
+                {/* Right Corner Buttons */}
+                {profileData && (
+                  <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center pr-1 sm:pr-3 z-10">
                     {/* View Mode (Bento vs. Standard Grid) - Only for Posts */}
                     {activeTab === "posts" && !isPostsLoading && posts.length > 0 && (
                       <div className="flex items-center gap-1 bg-zinc-900/60 p-0.5 rounded-full border border-zinc-800/80">
@@ -1074,9 +1045,35 @@ export default function App() {
                         </button>
                       </div>
                     )}
+
+                    {/* Reels Mode Selectors - Only for Reels */}
+                    {activeTab === "reels" && (
+                      <div className="flex items-center gap-1 bg-zinc-900/60 p-0.5 rounded-full border border-zinc-800/80">
+                        <button
+                          onClick={() => setReelsViewMode("grid")}
+                          className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
+                            reelsViewMode === "grid"
+                              ? "bg-white text-black shadow-sm"
+                              : "text-zinc-400 hover:text-white"
+                          }`}
+                        >
+                          Grid
+                        </button>
+                        <button
+                          onClick={() => setReelsViewMode("immersive")}
+                          className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
+                            reelsViewMode === "immersive"
+                              ? "bg-white text-black shadow-sm"
+                              : "text-zinc-400 hover:text-white"
+                          }`}
+                        >
+                          Immersive
+                        </button>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Tab Content */}
               {(activeTab === "posts" || activeTab === "reels") && (
