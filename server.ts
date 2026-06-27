@@ -11,26 +11,12 @@ async function startServer() {
   // JSON parser middleware
   app.use(express.json());
 
-  // Simple LRU cache for proxied media files to avoid repeated remote fetches and load instantly
-  const mediaCache = new Map<string, { buffer: Buffer; contentType: string; headers: any }>();
-  const MAX_MEDIA_CACHE_SIZE = 150;
-
   // Proxy request to bypass CORS for images/videos
   app.get("/api/proxy", async (req, res) => {
     try {
       const { url, dl } = req.query;
       if (!url || typeof url !== "string") {
         return res.status(400).send("No URL provided");
-      }
-
-      // Check if media is already cached in memory (only cache if it's not a Range request)
-      const isRangeRequest = !!req.headers.range;
-      if (!isRangeRequest && !dl && mediaCache.has(url)) {
-        const cachedMedia = mediaCache.get(url)!;
-        res.setHeader("Content-Type", cachedMedia.contentType);
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        res.setHeader("X-Cache", "HIT");
-        return res.send(cachedMedia.buffer);
       }
 
       const headers: any = {
@@ -40,9 +26,13 @@ async function startServer() {
       };
       if (req.headers.range) {
         headers["Range"] = req.headers.range;
+        console.log(`[Proxy] Range request: ${req.headers.range} for ${url}`);
+      } else {
+        console.log(`[Proxy] Full request for ${url}`);
       }
 
       const response = await fetch(url, { headers });
+      console.log(`[Proxy] Response status: ${response.status} ${response.statusText} for ${url}`);
       if (!response.ok && response.status !== 206) {
         return res
           .status(response.status)
@@ -72,36 +62,85 @@ async function startServer() {
         );
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-
-      // Store in Cache if not a Range request and cache is not too full
-      if (!isRangeRequest && !dl && buffer.length < 5 * 1024 * 1024) { // Only cache files < 5MB to keep memory low
-        if (mediaCache.size >= MAX_MEDIA_CACHE_SIZE) {
-          // Delete first entry (oldest)
-          const firstKey = mediaCache.keys().next().value;
-          if (firstKey !== undefined) {
-            mediaCache.delete(firstKey);
+      // Stream the response directly to avoid memory buffering delays and improve TTFB
+      if (response.body) {
+        const bodyType = response.body.constructor.name;
+        if (bodyType === "ReadableStream") {
+          try {
+            for await (const chunk of response.body as any) {
+              res.write(chunk);
+            }
+            res.end();
+          } catch (streamErr) {
+            console.error("[Proxy Stream Error]:", streamErr);
+            if (!res.headersSent) {
+              res.status(500).end();
+            } else {
+              res.end();
+            }
           }
+        } else if (typeof (response.body as any).pipe === 'function') {
+          (response.body as any).pipe(res);
+        } else {
+          res.send(Buffer.from(await response.arrayBuffer()));
         }
-        mediaCache.set(url, {
-          buffer,
-          contentType,
-          headers: {
-            "Content-Type": contentType,
-          },
-        });
+      } else {
+        res.end();
       }
-
-      res.send(buffer);
     } catch (e: any) {
-      console.error("[Proxy Error]:", e.message);
-      res.status(500).send("Proxy error");
+      console.error("[Proxy Error]:", e.stack || e.message || e);
+      require('fs').writeFileSync('proxy-error.log', e.stack || e.message || String(e));
+      if (!res.headersSent) {
+        res.status(500).send("Proxy error");
+      }
     }
   });
 
   const rapidApiKey = "f2a97f0d4fmsh3f12358e8168654p190e98jsn798748b183c4";
   const rapidApiHost = "instagram120.p.rapidapi.com";
+
+  // Translate low-level API error messages to helpful user messages
+  const translateError = (message: string): string => {
+    if (!message) return "The profile could not be loaded. Please try again.";
+    const lower = message.toLowerCase();
+    if (
+      lower.includes("download link not found") ||
+      lower.includes("link not found") ||
+      lower.includes("page not found") ||
+      lower.includes("not found")
+    ) {
+      return "This profile is private, restricted, or does not exist. Please verify that the username is spelled correctly and the account is public.";
+    }
+    return message;
+  };
+
+  const isClientError = (message: string): boolean => {
+    if (!message) return false;
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("download link not found") ||
+      lower.includes("link not found") ||
+      lower.includes("page not found") ||
+      lower.includes("not found") ||
+      lower.includes("invalid") ||
+      lower.includes("required")
+    );
+  };
+
+  const logRapidApiError = (context: string, status: number, errText: string): string => {
+    let parsedMessage = errText;
+    try {
+      const parsed = JSON.parse(errText);
+      if (parsed.message) parsedMessage = parsed.message;
+    } catch (e) {}
+    
+    if (isClientError(parsedMessage)) {
+      console.warn(`[RapidAPI Warning] ${context} (status ${status}):`, parsedMessage);
+    } else {
+      console.error(`[RapidAPI Error] ${context} (status ${status}):`, parsedMessage);
+    }
+    return parsedMessage;
+  };
 
   // Simple in-memory cache
   const cache = new Map<string, { data: any; expiry: number }>();
@@ -141,14 +180,25 @@ async function startServer() {
         );
         if (!response.ok) {
           const errText = await response.text();
-          throw new Error(`API returned ${response.status}: ${errText}`);
+          const parsedMsg = logRapidApiError("posts fetch", response.status, errText);
+          throw new Error(`API returned ${response.status}: ${parsedMsg}`);
         }
-        return await response.json();
+        const parsed = await response.json();
+        if (parsed && parsed.success === false) {
+          throw new Error(parsed.message || "Failed to fetch posts");
+        }
+        return parsed;
       });
       return res.json(data);
     } catch (error: any) {
-      console.error("[Posts fetching error]:", error);
-      return res.status(500).json({ error: "Failed to fetch posts", message: error.message });
+      const isClient = isClientError(error.message);
+      if (isClient) {
+        console.warn("[Posts fetching warning]:", error.message);
+        return res.status(404).json({ error: "Failed to fetch posts", message: translateError(error.message) });
+      } else {
+        console.error("[Posts fetching error]:", error);
+        return res.status(500).json({ error: "Failed to fetch posts", message: translateError(error.message) });
+      }
     }
   });
 
@@ -172,14 +222,25 @@ async function startServer() {
         );
         if (!response.ok) {
           const errText = await response.text();
-          throw new Error(`API returned ${response.status}: ${errText}`);
+          const parsedMsg = logRapidApiError("userInfo fetch", response.status, errText);
+          throw new Error(`API returned ${response.status}: ${parsedMsg}`);
         }
-        return await response.json();
+        const parsed = await response.json();
+        if (parsed && parsed.success === false) {
+          throw new Error(parsed.message || "Failed to fetch user info");
+        }
+        return parsed;
       });
       return res.json(data);
     } catch (error: any) {
-      console.error("[User Info fetching error]:", error);
-      return res.status(500).json({ error: "Failed to fetch user info", message: error.message });
+      const isClient = isClientError(error.message);
+      if (isClient) {
+        console.warn("[User Info fetching warning]:", error.message);
+        return res.status(404).json({ error: "Failed to fetch user info", message: translateError(error.message) });
+      } else {
+        console.error("[User Info fetching error]:", error);
+        return res.status(500).json({ error: "Failed to fetch user info", message: translateError(error.message) });
+      }
     }
   });
 
@@ -224,16 +285,14 @@ async function startServer() {
 
         if (!postsResponse.ok) {
           const errText = await postsResponse.text();
-          console.error("RapidAPI Error Body:", errText);
-          let parsedMessage = errText;
-          try {
-            const parsed = JSON.parse(errText);
-            if (parsed.message) parsedMessage = parsed.message;
-          } catch (e) {}
+          const parsedMessage = logRapidApiError("profile posts fetch", postsResponse.status, errText);
           throw new Error(`API returned ${postsResponse.status}: ${parsedMessage}`);
         }
         
         const postsData = await postsResponse.json();
+        if (postsData && postsData.success === false) {
+          throw new Error(postsData.message || "Failed to fetch profile");
+        }
         
         if (userInfoResponse && userInfoResponse.ok) {
            try {
@@ -249,10 +308,18 @@ async function startServer() {
 
       return res.json(data);
     } catch (error: any) {
-      console.error("[Instagram fetching error]:", error);
-      return res
-        .status(500)
-        .json({ error: "Failed to fetch profile", message: error.message });
+      const isClient = isClientError(error.message);
+      if (isClient) {
+        console.warn("[Instagram fetching warning]:", error.message);
+        return res
+          .status(404)
+          .json({ error: "Failed to fetch profile", message: translateError(error.message) });
+      } else {
+        console.error("[Instagram fetching error]:", error);
+        return res
+          .status(500)
+          .json({ error: "Failed to fetch profile", message: translateError(error.message) });
+      }
     }
   });
 
@@ -283,20 +350,29 @@ async function startServer() {
 
         if (!response.ok) {
           const errText = await response.text();
-          let parsedMessage = errText;
-          try {
-            const parsed = JSON.parse(errText);
-            if (parsed.message) parsedMessage = parsed.message;
-          } catch (e) {}
+          const parsedMessage = logRapidApiError("stories fetch", response.status, errText);
           throw new Error(`API returned ${response.status}: ${parsedMessage}`);
         }
-        return await response.json();
+        const parsed = await response.json();
+        if (parsed && parsed.success === false) {
+          throw new Error(parsed.message || "Failed to fetch stories");
+        }
+        return parsed;
       });
       return res.json(data);
     } catch (error: any) {
-      return res
-        .status(500)
-        .json({ error: "Failed to fetch stories", message: error.message });
+      const isClient = isClientError(error.message);
+      if (isClient) {
+        console.warn("[Stories fetching warning]:", error.message);
+        return res
+          .status(404)
+          .json({ error: "Failed to fetch stories", message: translateError(error.message) });
+      } else {
+        console.error("[Stories fetching error]:", error);
+        return res
+          .status(500)
+          .json({ error: "Failed to fetch stories", message: translateError(error.message) });
+      }
     }
   });
 
@@ -321,20 +397,29 @@ async function startServer() {
 
         if (!response.ok) {
           const errText = await response.text();
-          let parsedMessage = errText;
-          try {
-            const parsed = JSON.parse(errText);
-            if (parsed.message) parsedMessage = parsed.message;
-          } catch (e) {}
+          const parsedMessage = logRapidApiError("highlights fetch", response.status, errText);
           throw new Error(`API returned ${response.status}: ${parsedMessage}`);
         }
-        return await response.json();
+        const parsed = await response.json();
+        if (parsed && parsed.success === false) {
+          throw new Error(parsed.message || "Failed to fetch highlights");
+        }
+        return parsed;
       });
       return res.json(data);
     } catch (error: any) {
-      return res
-        .status(500)
-        .json({ error: "Failed to fetch highlights", message: error.message });
+      const isClient = isClientError(error.message);
+      if (isClient) {
+        console.warn("[Highlights fetching warning]:", error.message);
+        return res
+          .status(404)
+          .json({ error: "Failed to fetch highlights", message: translateError(error.message) });
+      } else {
+        console.error("[Highlights fetching error]:", error);
+        return res
+          .status(500)
+          .json({ error: "Failed to fetch highlights", message: translateError(error.message) });
+      }
     }
   });
 

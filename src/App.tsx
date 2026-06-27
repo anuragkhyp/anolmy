@@ -94,7 +94,7 @@ const CarouselIcon = ({ className }: { className?: string }) => (
 );
 
 // High-performance image component with smooth fade-in and self-healing fallback
-function FadeInImage({ src, alt, className, onError, fastLoad = false, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { fastLoad?: boolean }) {
+function FadeInImage({ src, alt, className, onError, fastLoad = true, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { fastLoad?: boolean }) {
   const [isLoaded, setIsLoaded] = useState(fastLoad);
   const [hasError, setHasError] = useState(false);
   const [currentSrc, setCurrentSrc] = useState<string | null>(null);
@@ -125,13 +125,7 @@ function FadeInImage({ src, alt, className, onError, fastLoad = false, ...props 
       return;
     }
     
-    // Attempt to load the raw URL directly in the browser first for optimal speed and to bypass datacenter IP restrictions
-    const rawUrl = getRawUrl(src);
-    if (rawUrl) {
-      setCurrentSrc(rawUrl);
-    } else {
-      setCurrentSrc(src);
-    }
+    setCurrentSrc(src);
     
     if (!fastLoad) setIsLoaded(false);
     setHasError(false);
@@ -140,17 +134,11 @@ function FadeInImage({ src, alt, className, onError, fastLoad = false, ...props 
 
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
     if (!src) return;
-    const rawUrl = getRawUrl(src);
-    if (rawUrl && currentSrc === rawUrl && !attemptedFallback) {
-      // Direct load failed, fallback to the proxied version
+    if (!attemptedFallback) {
       setAttemptedFallback(true);
-      setCurrentSrc(src);
-    } else if (!rawUrl && currentSrc === src && !attemptedFallback) {
-      // Direct load of unproxied URL failed, fallback to a newly constructed proxied version
-      setAttemptedFallback(true);
-      setCurrentSrc(proxify(src));
+      const raw = getRawUrl(src);
+      setCurrentSrc(raw || src); // fallback to raw or something else if needed
     } else {
-      // Both attempts failed
       setHasError(true);
       if (onError) onError(e);
     }
@@ -435,16 +423,80 @@ export default function App() {
     const query = targetUsername || searchQuery;
     if (!query.trim()) return;
 
-    let user = query.trim();
+    let input = query.trim();
+    let user = input;
+    let isDirectPostOrReel = false;
 
-    // Extract username from URL if pasted
-    if (user.includes("instagram.com/")) {
-      const match = user.match(/instagram\.com\/([a-zA-Z0-9._]+)/);
-      if (match && match[1]) user = match[1];
+    // Robust extraction of username from various Instagram link formats
+    if (input.includes("instagram.com/")) {
+      try {
+        let cleanedUrl = input;
+        if (!cleanedUrl.startsWith("http://") && !cleanedUrl.startsWith("https://")) {
+          cleanedUrl = "https://" + cleanedUrl;
+        }
+        const urlObj = new URL(cleanedUrl);
+        const paths = urlObj.pathname.split("/").filter(Boolean);
+        
+        if (paths.length > 0) {
+          if (paths[0] === "p" || paths[0] === "reel" || paths[0] === "reels") {
+            isDirectPostOrReel = true;
+          } else if (paths[0] === "stories") {
+            user = paths[1] || "";
+          } else {
+            user = paths[0];
+          }
+        }
+      } catch (e) {
+        // Simple fallback parsing if URL construction fails
+        const paths = input.split("instagram.com/")[1]?.split("?")[0]?.split("/").filter(Boolean) || [];
+        if (paths.length > 0) {
+          if (paths[0] === "p" || paths[0] === "reel" || paths[0] === "reels") {
+            isDirectPostOrReel = true;
+          } else if (paths[0] === "stories") {
+            user = paths[1] || "";
+          } else {
+            user = paths[0];
+          }
+        }
+      }
     }
-    // Remove @ if present
-    if (user.startsWith("@")) user = user.substring(1);
+
+    if (isDirectPostOrReel) {
+      setErrorMsg("You entered a direct link to a single post or reel. This app is designed to view and download full profile feeds, stories, and highlights. Please search for a public username (e.g., 'cristiano' or 'kyliejenner') to download their content.");
+      setHasSearched(true);
+      setProfileData(null);
+      setPosts([]);
+      setStories([]);
+      setHighlights([]);
+      setIsLoading(false);
+      setIsProfileLoading(false);
+      setIsPostsLoading(false);
+      setIsStoriesLoading(false);
+      setIsHighlightsLoading(false);
+      return;
+    }
+
+    if (user.startsWith("@")) {
+      user = user.substring(1);
+    }
+    // Remove query parameters or trailing slashes if any
+    user = user.split("?")[0].split("/").filter(Boolean)[0] || "";
     user = user.trim();
+
+    if (!user) {
+      setErrorMsg("Please enter a valid Instagram username or profile link.");
+      setHasSearched(true);
+      setProfileData(null);
+      setPosts([]);
+      setStories([]);
+      setHighlights([]);
+      setIsLoading(false);
+      setIsProfileLoading(false);
+      setIsPostsLoading(false);
+      setIsStoriesLoading(false);
+      setIsHighlightsLoading(false);
+      return;
+    }
 
     const cacheKey = user.toLowerCase();
 
@@ -1263,7 +1315,7 @@ export default function App() {
                                         style={{ aspectRatio: `${ratio}` }}
                                         onClick={() => setSelectedPost(post)}
                                       >
-                                        <img
+                                        <FadeInImage
                                           src={proxify(getMediaUrl(post, true))}
                                           alt={post.caption?.text || "Post"}
                                           loading={index < 12 ? "eager" : "lazy"}
@@ -1916,29 +1968,10 @@ function PostModal({
             </>
           )}
 
-          <button
-            onClick={handleDL}
-            className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 sm:px-4 sm:py-2 bg-black/50 backdrop-blur-md rounded-full text-white text-xs sm:text-sm font-bold shadow-lg hover:bg-white hover:text-black transition-all z-10"
-          >
-            <Download className="w-4 h-4" />{" "}
-            <span className="hidden sm:inline">Download</span>
-          </button>
-
-          <button
-            onClick={() => toggleSavePost(post)}
-            className={`absolute top-4 left-16 sm:left-32 flex items-center gap-2 px-3 py-1.5 sm:px-4 sm:py-2 backdrop-blur-md rounded-full text-xs sm:text-sm font-bold shadow-lg transition-all z-10 ${
-              isPostSaved(post.id)
-                ? "bg-white text-black hover:bg-neutral-200"
-                : "bg-black/50 text-white hover:bg-white hover:text-black"
-            }`}
-          >
-            <Bookmark className={`w-4 h-4 ${isPostSaved(post.id) ? "fill-current" : ""}`} />{" "}
-            <span className="hidden sm:inline">{isPostSaved(post.id) ? "Saved" : "Save"}</span>
-          </button>
         </div>
 
         {/* Meta sidebar */}
-        <div className="w-full md:w-80 lg:w-96 bg-black text-white flex flex-col h-auto max-h-[40vh] sm:max-h-none md:h-[90vh] overflow-y-auto border-l border-[#262626]">
+        <div className="w-full md:w-80 lg:w-96 bg-black text-white flex flex-col h-auto max-h-[40vh] sm:max-h-none md:h-[90vh] overflow-hidden border-l border-[#262626]">
           <div className="p-5 border-b border-[#262626] flex items-center gap-3 sticky top-0 bg-black/95 backdrop-blur-sm z-10">
             <div className="w-10 h-10 rounded-full bg-[#262626] overflow-hidden shrink-0">
               {post.user?.profile_pic_url && (
@@ -1954,8 +1987,27 @@ function PostModal({
               {post.user?.username || "Instagram User"}
             </div>
           </div>
-          <div className="p-5 text-sm text-white whitespace-pre-line leading-relaxed flex-1">
+          <div className="p-5 text-sm text-white whitespace-pre-line leading-relaxed flex-1 overflow-y-auto">
             {post.caption?.text || "No caption provided."}
+          </div>
+          <div className="p-4 border-t border-[#262626] flex gap-3 sticky bottom-0 bg-black/95 backdrop-blur-sm">
+            <button
+              onClick={handleDL}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-white text-sm font-semibold transition-colors"
+            >
+              <Download className="w-4 h-4" /> Download
+            </button>
+            <button
+              onClick={() => toggleSavePost(post)}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
+                isPostSaved(post.id)
+                  ? "bg-white text-black hover:bg-neutral-200"
+                  : "bg-neutral-800 text-white hover:bg-neutral-700"
+              }`}
+            >
+              <Bookmark className={`w-4 h-4 ${isPostSaved(post.id) ? "fill-current" : ""}`} /> 
+              {isPostSaved(post.id) ? "Saved" : "Save"}
+            </button>
           </div>
         </div>
       </div>
