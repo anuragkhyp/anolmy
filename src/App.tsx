@@ -21,6 +21,14 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
+import { FadeInImage } from "./components/FadeInImage";
+import {
+  MediaCandidate,
+  VideoVersion,
+  PostNode,
+  ProfileData,
+  CacheEntry
+} from "./types";
 
 // Helper to fallback to direct RapidAPI fetch if backend is missing (e.g., Netlify static deployment)
 const rapidApiKey = "f2a97f0d4fmsh3f12358e8168654p190e98jsn798748b183c4";
@@ -48,18 +56,11 @@ export const fetchWithFallback = async (endpoint: string, bodyParams: any, local
 
 export const proxify = (url: string, dl = false) => {
   if (!url) return url;
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    // Use fallback proxies on any deployment outside of localhost or AI Studio (run.app)
-    // This ensures it works seamlessly on Netlify, Vercel, GitHub Pages even with custom domains
-    if (host !== 'localhost' && host !== '127.0.0.1' && !host.includes('run.app')) {
-      // wsrv.nl is great for images, use it unless it's a video (mp4) or download
-      if (!dl && !url.includes('.mp4')) {
-        return `https://wsrv.nl/?url=${encodeURIComponent(url)}`;
-      }
-      return `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    }
+  // wsrv.nl is extremely fast and has global CDN edge-caching. Use it for all non-video images.
+  if (!dl && !url.includes('.mp4') && !url.includes('video') && !url.includes('.m4a') && !url.includes('.m4v')) {
+    return `https://wsrv.nl/?url=${encodeURIComponent(url)}`;
   }
+  // Fallback to our local express proxy for videos, downloads, or when forced
   return `/api/proxy?url=${encodeURIComponent(url)}${dl ? "&dl=1" : ""}`;
 };
 
@@ -93,149 +94,40 @@ const CarouselIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-// High-performance image component with smooth fade-in and self-healing fallback
-function FadeInImage({ src, alt, className, onError, fastLoad = true, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { fastLoad?: boolean }) {
-  const [isLoaded, setIsLoaded] = useState(fastLoad);
-  const [hasError, setHasError] = useState(false);
-  const [currentSrc, setCurrentSrc] = useState<string | null>(null);
-  const [attemptedFallback, setAttemptedFallback] = useState(false);
-  
-  // Extract raw URL if it's currently proxied
-  const getRawUrl = (url: string) => {
-    if (!url) return null;
-    if (url.startsWith("/api/proxy?url=")) {
-      try {
-        return decodeURIComponent(url.split("/api/proxy?url=")[1].split("&")[0]);
-      } catch (e) {
-        return null;
+const loadCacheFromStorage = (): Record<string, CacheEntry> => {
+  try {
+    const data = localStorage.getItem("instagram_viewer_cache_v2");
+    if (data) {
+      const parsed = JSON.parse(data);
+      // Prune expired cache entries (e.g., older than 24 hours to keep disk clean)
+      const now = Date.now();
+      const cleanCache: Record<string, CacheEntry> = {};
+      for (const key in parsed) {
+        if (now - parsed[key].timestamp < 86400000) {
+          cleanCache[key] = parsed[key];
+        }
       }
+      return cleanCache;
     }
-    if (url.startsWith("https://wsrv.nl/?url=")) {
-      try { return decodeURIComponent(url.split("https://wsrv.nl/?url=")[1]); } catch (e) { return null; }
-    }
-    if (url.startsWith("https://api.allorigins.win/raw?url=")) {
-      try { return decodeURIComponent(url.split("https://api.allorigins.win/raw?url=")[1]); } catch (e) { return null; }
-    }
-    return null;
-  };
+  } catch (e) {
+    console.error("Failed to load cache from storage", e);
+  }
+  return {};
+};
 
-  useEffect(() => {
-    if (!src) {
-      setCurrentSrc(null);
-      return;
-    }
-    
-    setCurrentSrc(src);
-    
-    if (!fastLoad) setIsLoaded(false);
-    setHasError(false);
-    setAttemptedFallback(false);
-  }, [src, fastLoad]);
+const localCache: Record<string, CacheEntry> = loadCacheFromStorage();
 
-  const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
-    if (!src) return;
-    if (!attemptedFallback) {
-      setAttemptedFallback(true);
-      const raw = getRawUrl(src);
-      setCurrentSrc(raw || src); // fallback to raw or something else if needed
-    } else {
-      setHasError(true);
-      if (onError) onError(e);
-    }
-  };
-
-  const isAvatar = className?.includes("rounded-full");
-
-  return (
-    <div className={`relative overflow-hidden bg-[#121212] ${className || ""}`}>
-      {!isLoaded && !hasError && (
-        <div className="absolute inset-0 bg-[#1a1a1a] flex items-center justify-center">
-          <div className="w-5 h-5 border-2 border-neutral-700 border-t-neutral-400 rounded-full animate-spin" />
-        </div>
-      )}
-      {hasError ? (
-        <div className="absolute inset-0 bg-[#161616] flex flex-col items-center justify-center text-neutral-500">
-          {isAvatar ? (
-            <svg className="w-1/2 h-1/2 text-neutral-600" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-            </svg>
-          ) : (
-            <div className="flex flex-col items-center justify-center gap-1.5 p-2">
-              <svg className="w-8 h-8 opacity-40 text-neutral-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <path d="M21 15l-5-5L5 21" />
-              </svg>
-              <span className="text-[10px] tracking-wider text-neutral-500 font-medium">Failed to load</span>
-            </div>
-          )}
-        </div>
-      ) : (
-        <img
-          src={currentSrc || undefined}
-          alt={alt}
-          referrerPolicy="no-referrer"
-          onLoad={() => setIsLoaded(true)}
-          onError={handleImageError}
-          className={`w-full h-full object-cover transition-all duration-500 ${
-            isLoaded ? "opacity-100 scale-100" : "opacity-0 scale-95"
-          }`}
-          {...props}
-        />
-      )}
-    </div>
-  );
-}
-
-// Interfaces
-interface MediaCandidate {
-  url: string;
-  width: number;
-  height: number;
-}
-interface VideoVersion {
-  url: string;
-  type: number;
-}
-interface PostNode {
-  id: string;
-  caption?: { text: string };
-  image_versions2?: { candidates: MediaCandidate[] };
-  video_versions?: VideoVersion[];
-  carousel_media?: {
-    image_versions2?: { candidates: MediaCandidate[] };
-    video_versions?: VideoVersion[];
-  }[];
-  play_count?: number;
-  like_count?: number;
-  comment_count?: number;
-  display_url?: string;
-  media_type?: number;
-  user?: any;
-  owner?: any;
-}
-interface ProfileData {
-  username: string;
-  full_name: string;
-  biography: string;
-  follower_count: number;
-  following_count: number;
-  media_count: number;
-  profile_pic_url_hd: string;
-  is_private: boolean;
-  is_verified?: boolean;
-}
-
-interface CacheEntry {
-  profileData: ProfileData | null;
-  posts: PostNode[];
-  stories: any[];
-  highlights: any[];
-  nextPageCursor: string | null;
-  timestamp: number;
-}
-
-const localCache: Record<string, CacheEntry> = {};
+const saveCacheToStorage = () => {
+  try {
+    localStorage.setItem("instagram_viewer_cache_v2", JSON.stringify(localCache));
+  } catch (e) {
+    console.error("Failed to save cache to storage", e);
+    // If quota exceeded, clear and save current only to avoid crash
+    try {
+      localStorage.removeItem("instagram_viewer_cache_v2");
+    } catch (_) {}
+  }
+};
 
 export default function App() {
   const bentoCols = useResponsiveColumns();
@@ -263,6 +155,16 @@ export default function App() {
 
   const [isBentoGrid, setIsBentoGrid] = useState(false);
   const [reelsViewMode, setReelsViewMode] = useState<"grid" | "immersive">("grid");
+
+  const filteredPosts = React.useMemo(() => {
+    return posts.filter((p) => {
+      if (activeTab === "posts") return true;
+      if (activeTab === "reels") {
+        return p.media_type === 2 || (p.video_versions && p.video_versions.length > 0);
+      }
+      return true;
+    });
+  }, [posts, activeTab]);
 
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [nextPageCursor, setNextPageCursor] = useState<string | null>(null);
@@ -418,6 +320,48 @@ export default function App() {
     }
   }, [profileData]);
 
+  const fetchStories = async (username: string) => {
+    if (isStoriesLoading || stories.length > 0) return;
+    setIsStoriesLoading(true);
+    try {
+      const res = await fetchWithFallback("stories", { username }, `/api/stories/${encodeURIComponent(username)}`);
+      const data = await res.json();
+      if (data.result) {
+        setStories(data.result);
+        const cacheKey = username.toLowerCase();
+        if (localCache[cacheKey]) {
+          localCache[cacheKey].stories = data.result;
+          saveCacheToStorage();
+        }
+      }
+    } catch (e) {
+      console.error("Stories fetch error:", e);
+    } finally {
+      setIsStoriesLoading(false);
+    }
+  };
+
+  const fetchHighlights = async (username: string) => {
+    if (isHighlightsLoading || highlights.length > 0) return;
+    setIsHighlightsLoading(true);
+    try {
+      const res = await fetchWithFallback("highlights", { username }, `/api/highlights/${encodeURIComponent(username)}`);
+      const data = await res.json();
+      if (data.result) {
+        setHighlights(data.result);
+        const cacheKey = username.toLowerCase();
+        if (localCache[cacheKey]) {
+          localCache[cacheKey].highlights = data.result;
+          saveCacheToStorage();
+        }
+      }
+    } catch (e) {
+      console.error("Highlights fetch error:", e);
+    } finally {
+      setIsHighlightsLoading(false);
+    }
+  };
+
   const fetchProfile = async (e?: React.FormEvent, targetUsername?: string) => {
     if (e) e.preventDefault();
     const query = targetUsername || searchQuery;
@@ -546,14 +490,15 @@ export default function App() {
         nextPageCursor: activeCursor,
         timestamp: Date.now(),
       };
+      saveCacheToStorage();
     };
 
-    // Parallel fetch: Posts (primary view content)
-    const fetchPostsPromise = fetchWithFallback("posts", { username: user }, `/api/posts/${encodeURIComponent(user)}`)
+    // Primary unified fetch: Profile and Posts (both in a single roundtrip to the server!)
+    const fetchProfilePromise = fetchWithFallback("posts", { username: user }, `/api/profile/${encodeURIComponent(user)}`)
       .then(async (res) => {
         const pData = await res.json();
         if (!res.ok) {
-          throw new Error(pData.message || pData.error || "Failed to fetch posts");
+          throw new Error(pData.message || pData.error || "Failed to fetch profile");
         }
 
         if (pData.result && pData.result.edges) {
@@ -571,126 +516,39 @@ export default function App() {
             activeCursor = null;
             setNextPageCursor(null);
           }
-
-          // If profileData is not set yet, create a quick placeholder from post user node to show avatar/username instantly!
-          if (!activeProfile && fetchedPosts.length > 0) {
-            const usrInfo = fetchedPosts[0].user || fetchedPosts[0].owner || {};
-            activeProfile = {
-              username: usrInfo.username || user,
-              full_name: usrInfo.full_name || usrInfo.fullname || user,
-              biography: usrInfo.biography || usrInfo.bio || "No biography available.",
-              follower_count: usrInfo.follower_count || usrInfo.followers || 0,
-              following_count: usrInfo.following_count || usrInfo.following || 0,
-              media_count: usrInfo.media_count || usrInfo.posts || fetchedPosts.length || 0,
-              profile_pic_url_hd: usrInfo.hd_profile_pic_url_info?.url || usrInfo.profile_pic_url || "",
-              is_private: usrInfo.is_private || false,
-              is_verified: usrInfo.is_verified || false,
-            };
-            setProfileData(activeProfile);
-          }
-          updateCache();
         }
-        setIsPostsLoading(false); // Stop post grid loader as soon as posts are ready
-      })
-      .catch((err) => {
-        console.error("Posts fetch error:", err);
-        // Fallback to /api/profile if special endpoint fails
-        return fetchWithFallback("posts", { username: user }, `/api/profile/${encodeURIComponent(user)}`)
-          .then(async (res) => {
-            const pData = await res.json();
-            if (!res.ok) throw new Error(pData.message || "Profile not found");
-            
-            if (pData.result && pData.result.edges) {
-              const fetchedPosts = pData.result.edges
-                .map((e: any) => e.node)
-                .filter(Boolean);
-              activePosts = fetchedPosts;
-              setPosts(fetchedPosts);
-              if (pData.result.page_info?.has_next_page) {
-                activeCursor = pData.result.page_info.end_cursor;
-                setNextPageCursor(activeCursor);
-              }
-            }
-            const usrInfo = pData.user_info || (activePosts.length > 0 ? (activePosts[0].user || activePosts[0].owner) : null) || {};
-            activeProfile = {
-              username: usrInfo.username || pData.username || user,
-              full_name: usrInfo.full_name || pData.full_name || pData.fullname || user,
-              biography: usrInfo.biography || pData.biography || pData.bio || "No biography available.",
-              follower_count: usrInfo.follower_count || pData.follower_count || pData.followers || 0,
-              following_count: usrInfo.following_count || pData.following_count || pData.following || 0,
-              media_count: usrInfo.media_count || pData.media_count || pData.posts || activePosts.length || 0,
-              profile_pic_url_hd: usrInfo.hd_profile_pic_url_info?.url || usrInfo.profile_pic_url || pData.profile_pic_url_hd || "",
-              is_private: usrInfo.is_private || pData.is_private || false,
-              is_verified: usrInfo.is_verified || pData.is_verified || false,
-            };
-            setProfileData(activeProfile);
-            updateCache();
-            setIsPostsLoading(false);
-          });
-      });
 
-    // Parallel fetch: User Info (does not block showing posts)
-    const fetchUserInfoPromise = fetchWithFallback("userInfo", { username: user }, `/api/user-info/${encodeURIComponent(user)}`)
-      .then(async (res) => {
-        const uiData = await res.json();
-        if (uiData.result && uiData.result[0] && uiData.result[0].user) {
-          const usrInfo = uiData.result[0].user;
-          activeProfile = {
-            username: usrInfo.username || activeProfile?.username || user,
-            full_name: usrInfo.full_name || activeProfile?.full_name || user,
-            biography: usrInfo.biography || activeProfile?.biography || "No biography available.",
-            follower_count: usrInfo.follower_count || activeProfile?.follower_count || 0,
-            following_count: usrInfo.following_count || activeProfile?.following_count || 0,
-            media_count: usrInfo.media_count || activeProfile?.media_count || activePosts.length || 0,
-            profile_pic_url_hd: usrInfo.hd_profile_pic_url_info?.url || usrInfo.profile_pic_url || activeProfile?.profile_pic_url_hd || "",
-            is_private: usrInfo.is_private || activeProfile?.is_private || false,
-            is_verified: usrInfo.is_verified || activeProfile?.is_verified || false,
-          };
-          setProfileData(activeProfile);
-          updateCache();
-        }
+        const usrInfo = pData.user_info || (activePosts.length > 0 ? (activePosts[0].user || activePosts[0].owner) : null) || {};
+        activeProfile = {
+          username: usrInfo.username || pData.username || user,
+          full_name: usrInfo.full_name || pData.full_name || pData.fullname || user,
+          biography: usrInfo.biography || pData.biography || pData.bio || "No biography available.",
+          follower_count: usrInfo.follower_count || pData.follower_count || pData.followers || 0,
+          following_count: usrInfo.following_count || pData.following_count || pData.following || 0,
+          media_count: usrInfo.media_count || pData.media_count || pData.posts || activePosts.length || 0,
+          profile_pic_url_hd: usrInfo.hd_profile_pic_url_info?.url || usrInfo.profile_pic_url || pData.profile_pic_url_hd || "",
+          is_private: usrInfo.is_private || pData.is_private || false,
+          is_verified: usrInfo.is_verified || pData.is_verified || false,
+        };
+        setProfileData(activeProfile);
+        updateCache();
+
+        setIsPostsLoading(false);
         setIsProfileLoading(false);
-      })
-      .catch((err) => {
-        console.error("User Info fetch error:", err);
-        setIsProfileLoading(false);
+
+        // Soft background defer load of stories & highlights so they don't block the posts rendering at all!
+        setTimeout(() => {
+          fetchStories(user);
+        }, 1200);
+
+        setTimeout(() => {
+          fetchHighlights(user);
+        }, 2400);
       });
 
-    // Parallel fetch: Stories
-    const fetchStoriesPromise = fetchWithFallback("stories", { username: user }, `/api/stories/${encodeURIComponent(user)}`)
-      .then(async (r) => {
-        const data = await r.json();
-        if (data.result) {
-          activeStories = data.result;
-          setStories(data.result);
-          updateCache();
-        }
-        setIsStoriesLoading(false);
-      })
-      .catch((e) => {
-        console.log(e);
-        setIsStoriesLoading(false);
-      });
-
-    // Parallel fetch: Highlights
-    const fetchHighlightsPromise = fetchWithFallback("highlights", { username: user }, `/api/highlights/${encodeURIComponent(user)}`)
-      .then(async (r) => {
-        const data = await r.json();
-        if (data.result) {
-          activeHighlights = data.result;
-          setHighlights(data.result);
-          updateCache();
-        }
-        setIsHighlightsLoading(false);
-      })
-      .catch((e) => {
-        console.log(e);
-        setIsHighlightsLoading(false);
-      });
-
-    // Wait for the primary post list to complete (or fail) to manage overall loader
+    // Wait for the unified fetch to complete (or fail) to update final load states
     try {
-      await fetchPostsPromise;
+      await fetchProfilePromise;
     } catch (err: any) {
       if (!cached) {
         setErrorMsg(err.message || "An unexpected error occurred.");
@@ -699,6 +557,8 @@ export default function App() {
       setIsLoading(false);
       setIsPostsLoading(false);
       setIsProfileLoading(false);
+      setIsStoriesLoading(false);
+      setIsHighlightsLoading(false);
     }
   };
 
@@ -1182,13 +1042,19 @@ export default function App() {
                     icon={<Clock className="w-3.5 h-3.5" />}
                     label={`Stories (${isStoriesLoading && stories.length === 0 ? "..." : stories.length})`}
                     active={activeTab === "stories"}
-                    onClick={() => setActiveTab("stories")}
+                    onClick={() => {
+                      setActiveTab("stories");
+                      if (profileData) fetchStories(profileData.username);
+                    }}
                   />
                   <TabBtn
                     icon={<Star className="w-3.5 h-3.5" />}
                     label={`Highlights (${isHighlightsLoading && highlights.length === 0 ? "..." : highlights.length})`}
                     active={activeTab === "highlights"}
-                    onClick={() => setActiveTab("highlights")}
+                    onClick={() => {
+                      setActiveTab("highlights");
+                      if (profileData) fetchHighlights(profileData.username);
+                    }}
                   />
                 </div>
 
@@ -1268,35 +1134,21 @@ export default function App() {
                     </div>
                   ) : activeTab === "reels" && reelsViewMode === "immersive" ? (
                     <ReelsImmersiveFeed
-                      reels={posts.filter(
-                        (p) =>
-                          p.media_type === 2 ||
-                          (p.video_versions && p.video_versions.length > 0)
-                      )}
+                      reels={filteredPosts}
                       proxify={proxify}
                       getMediaUrl={getMediaUrl}
                       triggerDownload={triggerDownload}
                     />
                   ) : (
                     <>
-                      {posts.filter(
-                        (p) =>
-                          activeTab === "posts" ||
-                          p.media_type === 2 ||
-                          (p.video_versions && p.video_versions.length > 0),
-                      ).length === 0 ? (
+                      {filteredPosts.length === 0 ? (
                         <div className="col-span-3 py-20 text-center text-[#A8A8A8]">
                           No {activeTab} found or account is completely private.
                         </div>
                       ) : isBentoGrid ? (
                         /* Staggered Bento Grid Layout (JS Masonry) */
                         (() => {
-                          const bentoPosts = posts.filter(
-                            (p) =>
-                              activeTab === "posts" ||
-                              p.media_type === 2 ||
-                              (p.video_versions && p.video_versions.length > 0)
-                          );
+                          const bentoPosts = filteredPosts;
                           const colsData = Array.from({ length: bentoCols }, () => [] as typeof bentoPosts);
                           bentoPosts.forEach((p, i) => colsData[i % bentoCols].push(p));
 
@@ -1344,14 +1196,7 @@ export default function App() {
                       ) : (
                         /* Standard Square Grid Layout */
                         <div className="grid grid-cols-3 gap-1 sm:gap-2">
-                          {posts
-                            .filter(
-                              (p) =>
-                                activeTab === "posts" ||
-                                p.media_type === 2 ||
-                                (p.video_versions && p.video_versions.length > 0),
-                            )
-                            .map((post, index) => {
+                          {filteredPosts.map((post, index) => {
                               return (
                                 <div
                                   key={post.id || `post-${index}`}
